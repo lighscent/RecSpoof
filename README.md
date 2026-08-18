@@ -31,7 +31,7 @@ python recspoof.py --check              check config targets, inject the rest
 ### Options
 
 | Option | Description |
-| ----- | ---- - |
+| ----- | ----- |
 | `-p, --pid` | Target a window by process ID (exact) |
 | `-n, --name` | Target by process name (exact) |
 | `-t, --title` | Target by window title (substring) |
