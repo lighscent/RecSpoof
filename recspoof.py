@@ -26,11 +26,24 @@ import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from ctypes import wintypes
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger("recspoof")
 
-Window = tuple[int, int, str]
+
+@dataclass
+class Window:
+    """A visible window (hwnd, pid, title)."""
+
+    hwnd: int
+    pid: int
+    title: str
+
+    def __iter__(self):
+        """Backward compatible with the old tuple unpacking."""
+        return iter((self.hwnd, self.pid, self.title))
+
 
 # ------------------------------------------------------------- constants
 
@@ -423,7 +436,7 @@ def list_windows() -> list[Window]:
             if title:
                 pid = wintypes.DWORD()
                 GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                windows.append((hwnd, pid.value, title))
+                windows.append(Window(hwnd, pid.value, title))
         return True
 
     EnumWindows(callback, 0)
@@ -530,7 +543,7 @@ def select_interactive(windows: list[Window]) -> None:
         line = row_text(i)[: width - 3]  # truncate so no wrap (keeps rows aligned)
         if selected:
             return f"{GREEN}> {line}{RESET}"
-        if get_state(windows[i][0]) == WDA_EXCLUDEFROMCAPTURE:
+        if get_state(windows[i].hwnd) == WDA_EXCLUDEFROMCAPTURE:
             return f"{CYAN}  {line}{RESET}"
         return f"  {line}"
 
@@ -988,13 +1001,13 @@ def find_targets(
 ) -> list[Window] | None:
     """Return the list of target windows according to the CLI criteria."""
     if args.pid:
-        return [w for w in windows if w[1] == args.pid]
+        return [w for w in windows if w.pid == args.pid]
     if args.name:
         name = args.name.lower()
-        return [w for w in windows if get_process_name(w[1]).lower() == name]
+        return [w for w in windows if get_process_name(w.pid).lower() == name]
     if args.title:
         t = args.title.lower()
-        return [w for w in windows if t in w[2].lower()]
+        return [w for w in windows if t in w.title.lower()]
     if args.all:
         return windows
     return None
