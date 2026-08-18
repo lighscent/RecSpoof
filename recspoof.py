@@ -9,6 +9,7 @@ Usage:
   python recspoof.py -t Discord -c         # remove protection
   python recspoof.py -n brave -a           # protect all matching windows
   python recspoof.py -p 1234 -x            # force in-process injection
+  python recspoof.py --config protect.txt  # batch-protect from a config file
 """
 
 from __future__ import annotations
@@ -505,13 +506,16 @@ def print_windows(windows: list[Window]) -> None:
     print("\n".join(render_windows(windows)))
 
 
-def select_interactive(windows: list[Window]) -> None:
+def select_interactive(windows: list[Window], config_path: str | None = None) -> None:
     """Arrow-key navigation; Enter protects inline, status shown at the bottom."""
     enable_ansi()
     GREEN = "\x1b[32m"
     CYAN = "\x1b[36m"
     RESET = "\x1b[0m"
-    hint = "Up/Down: navigate | Enter: protect | a: protect all | r: refresh | q: quit"
+    hint = (
+        "Up/Down: navigate | Enter: protect | a: all | s: save to config "
+        "| r: refresh | q: quit"
+    )
 
     header, sep, *_ = render_windows(windows)
     body = list(windows)
@@ -552,6 +556,29 @@ def select_interactive(windows: list[Window]) -> None:
     def draw_status() -> None:
         sys.stdout.write(f"\x1b[{page_h + 4}H\x1b[K{status[0]}")
         sys.stdout.flush()
+
+    def save_to_config(i: int) -> None:
+        """Add the selected window's process name to the config file."""
+        name = os.path.splitext(get_process_name(windows[i].pid))[0].lower()
+        path = os.path.abspath(config_path or "protect.txt")
+        base = os.path.basename(path)
+        try:
+            existing: list[str] = []
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    existing = [ln.strip().lower() for ln in f]
+            if name in existing:
+                msg = f"'{name}' is already in {base}"
+            else:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(f"{name}\n")
+                msg = f"Added '{name}' to {base}"
+                log.info("Config: added '%s' to %s", name, path)
+        except OSError as e:
+            log.error("Config: unable to write %s: %s", path, e)
+            msg = f"Unable to write {base}"
+        status[0] = msg[: width - 1]
+        draw_status()
 
     def draw_all() -> None:
         sys.stdout.write("\x1b[H\x1b[J")  # cursor home + clear screen
@@ -635,6 +662,8 @@ def select_interactive(windows: list[Window]) -> None:
                 draw_all()
             elif key == "q":
                 return
+            elif key == "s":
+                save_to_config(idx[0])
             elif key in ("r", "R"):
                 log.debug("Refreshing window list...")
                 refreshed = list_windows()
@@ -998,7 +1027,35 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="force in-process injection (no direct attempt)",
     )
+    opt.add_argument(
+        "--config",
+        metavar="FILE",
+        help="batch-protect from a file (one target per line, # comments)",
+    )
     return parser.parse_args()
+
+
+def load_config(path: str) -> list[str]:
+    """Read targets from a config file (one per line, # comments allowed)."""
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [ln.strip() for ln in f]
+    return [ln for ln in lines if ln and not ln.startswith("#")]
+
+
+def config_matches(windows: list[Window], path: str) -> list[Window]:
+    """Windows matching any line of a config file (name or title substring)."""
+    names = load_config(path)
+    matched: list[Window] = []
+    seen: set[int] = set()
+    for name in names:
+        needle = name.lower()
+        for w in windows:
+            if w.hwnd in seen:
+                continue
+            if needle in get_process_name(w.pid).lower() or needle in w.title.lower():
+                seen.add(w.hwnd)
+                matched.append(w)
+    return matched
 
 
 def find_targets(
@@ -1016,6 +1073,18 @@ def find_targets(
     if args.all:
         return windows
     return None
+
+
+def ask_yes_no(prompt: str) -> bool:
+    """Ask a y/N question on the console (works after stdio rebinding)."""
+    try:
+        print(f"{prompt} ", end="")
+        sys.stdout.flush()
+        answer = msvcrt.getch().lower()
+        print()
+        return answer == b"y"
+    except (EOFError, OSError):
+        return False
 
 
 def wait_key() -> None:
@@ -1040,12 +1109,49 @@ def main() -> int:
         print_windows(windows)
         return 0
 
+    if args.config:
+        try:
+            targets = config_matches(windows, args.config)
+        except OSError:
+            log.error("Config file not found: %s", args.config)
+            print(f"Config file not found: {args.config}")
+            created = False
+            if ask_yes_no("Create it now? (y/N)"):
+                try:
+                    with open(args.config, "w", encoding="utf-8") as f:
+                        f.write(
+                            "# one target per line (process name or window title)\n"
+                        )
+                    print(
+                        f"Created {args.config} - add one target per line, "
+                        "then run again."
+                    )
+                    created = True
+                except OSError:
+                    log.error("Unable to create config file: %s", args.config)
+                    print(f"Unable to create config file: {args.config}")
+            wait_key()
+            return 0 if created else 1
+        if not targets:
+            print("No windows matched the config file.")
+            wait_key()
+            return 1
+        log.debug("Config: %d window(s) matched", len(targets))
+        ok = protect(targets, clear=args.clear, force_inject=args.inject)
+        if ok:
+            verb = "removed" if args.clear else "applied"
+            print(
+                f"[VERIFIED] Protection {verb} and verified for {len(targets)} window(s)."
+            )
+        wait_key()
+        return 0 if ok else 1
+
     targets = find_targets(windows, args)
     if targets is None:
         if not windows:
             print("No visible windows found.")
             return 1
-        select_interactive(windows)
+        select_interactive(windows, args.config)
         return 0
 
     if not targets:

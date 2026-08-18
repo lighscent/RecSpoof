@@ -20,6 +20,7 @@ python recspoof.py -n notepad            protect by process name
 python recspoof.py -t Discord -c         remove protection
 python recspoof.py -n brave -a           protect all matching windows
 python recspoof.py -p 1234 -x            force in-process injection
+python recspoof.py --config protect.txt  batch-protect from a config file
 ```
 
 ### Options
@@ -34,6 +35,16 @@ python recspoof.py -p 1234 -x            force in-process injection
 | `-s, --status` | Show injection state only (no elevation) |
 | `-c, --clear` | Remove injection (`WDA_NONE`) |
 | `-x, --inject` | Force in-process injection instead of the direct call |
+| `--config FILE` | Batch-protect from a file: one target per line (`#` comments allowed), each line matches process name or window title (substring, case-insensitive). If the file does not exist, the script offers to create it. |
+
+Example `protect.txt`:
+
+```
+# my streaming setup
+discord
+obs
+voicemeeter
+```
 
 ### Interactive menu
 
@@ -42,6 +53,7 @@ When launched without criteria, an arrow-key menu shows every visible window:
 - `Up` / `Down` — navigate the list (rows already injected are cyan)
 - `Enter` — inject the selected window (result shown in the status line at the bottom)
 - `a` — inject all windows
+- `s` — add the selected window to the config file (`protect.txt` by default, or the `--config` file)
 - `r` — refresh the window list
 - `q` / `Ctrl+C` — quit (closes the script immediately)
 
