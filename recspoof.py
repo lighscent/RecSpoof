@@ -24,6 +24,7 @@ import struct
 import subprocess
 import sys
 from collections.abc import Callable
+from contextlib import contextmanager
 from ctypes import wintypes
 from typing import Any
 
@@ -298,6 +299,16 @@ def enable_ansi() -> None:
         SetConsoleMode(h, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
 
+@contextmanager
+def safe_handle(handle: wintypes.HANDLE) -> Any:
+    """Close a Win32 handle on exit, even on exception."""
+    try:
+        yield handle
+    finally:
+        if handle and handle != INVALID_HANDLE_VALUE:
+            CloseHandle(handle)
+
+
 def setup_console_logging() -> None:
     """Configure console-only logging (WARNING and above)."""
     stream = logging.StreamHandler()
@@ -366,11 +377,11 @@ def relaunch_elevated() -> int:
         else:
             log.error("Elevation failed (error %s).", err)
         return 0
-    WaitForSingleObject(sei.hProcess, 0xFFFFFFFF)  # keep the console alive
-    code = wintypes.DWORD()
-    GetExitCodeProcess(sei.hProcess, ctypes.byref(code))
-    CloseHandle(sei.hProcess)
-    return code.value
+    with safe_handle(sei.hProcess):
+        WaitForSingleObject(sei.hProcess, 0xFFFFFFFF)  # keep the console alive
+        code = wintypes.DWORD()
+        GetExitCodeProcess(sei.hProcess, ctypes.byref(code))
+        return code.value
 
 
 def ensure_admin() -> None:
@@ -392,17 +403,14 @@ def get_window_title(hwnd: int) -> str:
 
 @functools.lru_cache(maxsize=256)
 def get_process_name(pid: int) -> str:
-    h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not h:
-        return f"pid {pid}"
-    try:
+    with safe_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)) as h:
+        if not h:
+            return f"pid {pid}"
         size = wintypes.DWORD(260)
         buf = ctypes.create_unicode_buffer(260)
         if QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
             return os.path.basename(buf.value)
         return f"pid {pid}"
-    finally:
-        CloseHandle(h)
 
 
 def list_windows() -> list[Window]:
@@ -443,10 +451,9 @@ def is_chromium(pid: int) -> bool:
 
 
 def process_suspended(pid: int) -> bool:
-    snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, pid)
-    if snap == INVALID_HANDLE_VALUE:
-        return False
-    try:
+    with safe_handle(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, pid)) as snap:
+        if snap == INVALID_HANDLE_VALUE:
+            return False
         entry = THREADENTRY32()
         entry.dwSize = ctypes.sizeof(THREADENTRY32)
         if not Thread32First(snap, ctypes.byref(entry)):
@@ -456,8 +463,6 @@ def process_suspended(pid: int) -> bool:
                 return True
             if not Thread32Next(snap, ctypes.byref(entry)):
                 return False
-    finally:
-        CloseHandle(snap)
 
 
 # ---------------------------------------------------------------- actions
@@ -858,64 +863,82 @@ def inject(hwnd: int, affinity: int) -> bool:
         "Injecting into PID %s (%d bytes of shellcode)", pid.value, len(shellcode)
     )
 
-    h = OpenProcess(
-        PROCESS_CREATE_THREAD
-        | PROCESS_VM_OPERATION
-        | PROCESS_VM_READ
-        | PROCESS_VM_WRITE,
-        False,
-        pid.value,
-    )
-    if not h:
-        raise OSError(f"OpenProcess failed (error {ctypes.get_last_error()})")
-
-    try:
-        is_wow64 = wintypes.BOOL()
-        if IsWow64Process(h, ctypes.byref(is_wow64)) and is_wow64.value:
-            shellcode = build_shellcode_x86(affinity, *resolve_x86_addresses(h))
-            log.debug("Injected shellcode is x86 (%d bytes)", len(shellcode))
-        else:
-            shellcode = build_shellcode(affinity, swda, exit_thread)
-        if process_suspended(pid.value):
-            raise OSError("target process is suspended (background app); open it first")
-
-        remote = VirtualAllocEx(
-            h, None, len(shellcode), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
+    remote = None
+    with safe_handle(
+        OpenProcess(
+            PROCESS_CREATE_THREAD
+            | PROCESS_VM_OPERATION
+            | PROCESS_VM_READ
+            | PROCESS_VM_WRITE,
+            False,
+            pid.value,
         )
-        if not remote:
-            raise OSError(f"VirtualAllocEx failed (error {ctypes.get_last_error()})")
+    ) as h:
+        if not h:
+            raise OSError(f"OpenProcess failed (error {ctypes.get_last_error()})")
+        try:
+            is_wow64 = wintypes.BOOL()
+            if IsWow64Process(h, ctypes.byref(is_wow64)) and is_wow64.value:
+                shellcode = build_shellcode_x86(affinity, *resolve_x86_addresses(h))
+                log.debug("Injected shellcode is x86 (%d bytes)", len(shellcode))
+            else:
+                shellcode = build_shellcode(affinity, swda, exit_thread)
+            if process_suspended(pid.value):
+                raise OSError(
+                    "target process is suspended (background app); open it first"
+                )
 
-        buf = ctypes.create_string_buffer(shellcode)
-        written = ctypes.c_size_t()
-        if not WriteProcessMemory(
-            h, remote, buf, len(shellcode), ctypes.byref(written)
-        ):
-            raise OSError(
-                f"WriteProcessMemory failed (error {ctypes.get_last_error()})"
+            remote = VirtualAllocEx(
+                h,
+                None,
+                len(shellcode),
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE,
             )
+            if not remote:
+                raise OSError(
+                    f"VirtualAllocEx failed (error {ctypes.get_last_error()})"
+                )
 
-        tid = wintypes.DWORD()
-        thread = CreateRemoteThread(
-            h, None, 0, remote, ctypes.c_void_p(hwnd), 0, ctypes.byref(tid)
-        )
-        if not thread:
-            raise OSError(
-                f"CreateRemoteThread failed (error {ctypes.get_last_error()})"
-            )
+            buf = ctypes.create_string_buffer(shellcode)
+            written = ctypes.c_size_t()
+            if not WriteProcessMemory(
+                h, remote, buf, len(shellcode), ctypes.byref(written)
+            ):
+                raise OSError(
+                    f"WriteProcessMemory failed (error {ctypes.get_last_error()})"
+                )
 
-        WaitForSingleObject(thread, 5000)
-        code = wintypes.DWORD()
-        GetExitCodeThread(thread, ctypes.byref(code))
-        log.debug("Injected thread result: %s", code.value)
-        CloseHandle(thread)
-        if code.value == STILL_ACTIVE:
-            raise OSError("injected thread did not finish in time (process suspended?)")
-        if code.value >= 0x80000000:
-            raise OSError(f"injected thread crashed (exit code 0x{code.value:08X})")
-        VirtualFreeEx(h, remote, 0, MEM_RELEASE)
-        return bool(code.value)
-    finally:
-        CloseHandle(h)
+            tid = wintypes.DWORD()
+            with safe_handle(
+                CreateRemoteThread(
+                    h, None, 0, remote, ctypes.c_void_p(hwnd), 0, ctypes.byref(tid)
+                )
+            ) as thread:
+                if not thread:
+                    raise OSError(
+                        f"CreateRemoteThread failed (error {ctypes.get_last_error()})"
+                    )
+
+                WaitForSingleObject(thread, 5000)
+                code = wintypes.DWORD()
+                GetExitCodeThread(thread, ctypes.byref(code))
+                log.debug("Injected thread result: %s", code.value)
+                if code.value == STILL_ACTIVE:
+                    remote = None  # leave the stub: the thread may still run it
+                    raise OSError(
+                        "injected thread did not finish in time (process suspended?)"
+                    )
+                if code.value >= 0x80000000:
+                    raise OSError(
+                        f"injected thread crashed (exit code 0x{code.value:08X})"
+                    )
+                VirtualFreeEx(h, remote, 0, MEM_RELEASE)
+                remote = None
+                return bool(code.value)
+        finally:
+            if remote:
+                VirtualFreeEx(h, remote, 0, MEM_RELEASE)
 
 
 # ---------------------------------------------------------------- CLI

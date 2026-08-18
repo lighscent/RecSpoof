@@ -20,7 +20,8 @@ Single-file Windows tool (`recspoof.py`) that hides app windows from screen capt
 ## Architecture notes
 
 - `Window = tuple[int, int, str]` (hwnd, pid, title); `api(dll, name, restype, *argtypes)` wraps ctypes bindings.
-- Injection: `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread` with shellcode that calls `SetWindowDisplayAffinity` then `ExitThread`; exit code = call result (thread's `mov ecx, eax`). x86 (WOW64) targets use stdcall stack args and PE-export resolution with **forwarded export chasing** (`kernel32!ExitThread` → `KERNELBASE!ExitThread`).
+- All Win32 handles go through the `safe_handle(handle)` context manager (`@contextmanager`, skips 0/INVALID_HANDLE_VALUE, closes on exception); never call `CloseHandle` directly outside it.
+- Injection: `VirtualAllocEx` + `WriteProcessMemory` + `CreateRemoteThread` with shellcode that calls `SetWindowDisplayAffinity` then `ExitThread`; exit code = call result (thread's `mov ecx, eax`). x86 (WOW64) targets use stdcall stack args and PE-export resolution with **forwarded export chasing** (`kernel32!ExitThread` → `KERNELBASE!ExitThread`). Remote stub memory is freed in a `finally` (`remote = None` before raising) EXCEPT on `STILL_ACTIVE` (thread may still run it — leave the stub).
 - Injection guards: `process_suspended(pid)` (Toolhelp `THREAD_SUSPENDED`), `STILL_ACTIVE` (259) after 5 s wait, exit codes ≥ 0x80000000 = crash.
 - `[OK]` is only printed when a follow-up `window_affinity()` read-back matches the requested state.
 - Chromium browsers (CHROMIUM frozenset) are marked `unsupported` in the INJ column and SKIPPED by `protect_one()`/`protect()` — direct call fails error 5 even elevated, injection crashes the process.
