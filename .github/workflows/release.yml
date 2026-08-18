@@ -3,7 +3,7 @@ name: Auto Release
 on:
   push:
     branches: [master]
-    paths: [recspoof.py, lib/**]
+    paths: [recspoof.py, lib/**, .github/workflows/release.yml]
 
 permissions:
   contents: write
@@ -59,6 +59,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ steps.version.outputs.version }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VER" -m "RecSpoof v$VER"
           git push origin "v$VER"
           zip -r "recspoof-$VER.zip" recspoof.py lib
