@@ -30,22 +30,22 @@ python recspoof.py -p 1234 -x            force in-process injection
 | `-n, --name` | Target by process name (exact) |
 | `-t, --title` | Target by window title (substring) |
 | `-a, --all` | Apply to all matching windows |
-| `-l, --list` | List windows and their protection state |
-| `-s, --status` | Show protection state only (no elevation) |
-| `-c, --clear` | Remove protection (`WDA_NONE`) |
+| `-l, --list` | List windows and their injection state |
+| `-s, --status` | Show injection state only (no elevation) |
+| `-c, --clear` | Remove injection (`WDA_NONE`) |
 | `-x, --inject` | Force in-process injection instead of the direct call |
 
 ### Interactive menu
 
 When launched without criteria, an arrow-key menu shows every visible window:
 
-- `Up` / `Down` — navigate the list (rows already protected are cyan)
-- `Enter` — protect the selected window (result shown in the status line at the bottom)
-- `a` — protect all windows
+- `Up` / `Down` — navigate the list (rows already injected are cyan)
+- `Enter` — inject the selected window (result shown in the status line at the bottom)
+- `a` — inject all windows
 - `r` — refresh the window list
 - `q` / `Ctrl+C` — quit (closes the script immediately)
 
-The `INJ` column indicates windows that cannot be protected safely (see below).
+The `INJ` column indicates windows that cannot be injected safely (see below).
 
 ## How it works
 
@@ -60,4 +60,4 @@ Both 64-bit and 32-bit (WOW64) target processes are supported. For 32-bit target
 
 - **Chromium-based browsers** (`chrome`, `brave`, `edge`, `opera`, `vivaldi`, `chromium`) cannot be protected by this tool: the direct call is denied by Windows (error 5, even elevated), and creating a remote thread in the browser process crashes it. They are marked `unsupported` in the window list.
 - Suspended background apps (e.g. some UWP apps like Calculator) cannot be protected until they are brought to the foreground; the script reports the failure instead of hanging.
-- A protected window shows up black/frozen in capture tools by design — restart or re-select the OBS/Discord source once after protecting to get a clean result.
+- A window that was injected shows up black/frozen in capture tools by design — restart or re-select the OBS/Discord source once after injecting to get a clean result.
