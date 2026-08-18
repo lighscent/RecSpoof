@@ -21,6 +21,7 @@ python recspoof.py -t Discord -c         remove protection
 python recspoof.py -n brave -a           protect all matching windows
 python recspoof.py -p 1234 -x            force in-process injection
 python recspoof.py --config protect.txt  batch-protect from a config file
+python recspoof.py --check              check config targets, inject the rest
 ```
 
 ### Options
@@ -36,6 +37,7 @@ python recspoof.py --config protect.txt  batch-protect from a config file
 | `-c, --clear` | Remove injection (`WDA_NONE`) |
 | `-x, --inject` | Force in-process injection instead of the direct call |
 | `--config FILE` | Batch-protect from a file: one target per line (`#` comments allowed), each line matches process name or window title (substring, case-insensitive). If the file does not exist, the script offers to create it. |
+| `--check` | Check the config targets: reports injected / not injected windows, apps that are not running, then offers to inject the unprotected ones (uses `--config FILE`, or `protect.txt` by default) |
 
 Example `protect.txt`:
 

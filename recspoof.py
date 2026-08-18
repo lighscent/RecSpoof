@@ -10,6 +10,7 @@ Usage:
   python recspoof.py -n brave -a           # protect all matching windows
   python recspoof.py -p 1234 -x            # force in-process injection
   python recspoof.py --config protect.txt  # batch-protect from a config file
+  python recspoof.py --check               # check config targets, inject the rest
 """
 
 from __future__ import annotations
@@ -1019,6 +1020,11 @@ def parse_args() -> argparse.Namespace:
     action.add_argument(
         "-c", "--clear", action="store_true", help="remove protection (WDA_NONE)"
     )
+    action.add_argument(
+        "--check",
+        action="store_true",
+        help="check config targets and propose to inject the unprotected ones",
+    )
 
     opt = parser.add_argument_group("options")
     opt.add_argument(
@@ -1087,6 +1093,27 @@ def ask_yes_no(prompt: str) -> bool:
         return False
 
 
+def load_config_targets(windows: list[Window], path: str) -> list[Window] | None:
+    """Config targets, or None if the file is missing (creation offered)."""
+    try:
+        return config_matches(windows, path)
+    except OSError:
+        log.error("Config file not found: %s", path)
+        print(f"Config file not found: {path}")
+        created = False
+        if ask_yes_no("Create it now? (y/N)"):
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("# one target per line (process name or window title)\n")
+                print(f"Created {path} - add one target per line, then run again.")
+                created = True
+            except OSError:
+                log.error("Unable to create config file: %s", path)
+                print(f"Unable to create config file: {path}")
+        wait_key()
+        sys.exit(0 if created else 1)
+
+
 def wait_key() -> None:
     """Keep the console open until a key is pressed."""
     try:
@@ -1110,28 +1137,7 @@ def main() -> int:
         return 0
 
     if args.config:
-        try:
-            targets = config_matches(windows, args.config)
-        except OSError:
-            log.error("Config file not found: %s", args.config)
-            print(f"Config file not found: {args.config}")
-            created = False
-            if ask_yes_no("Create it now? (y/N)"):
-                try:
-                    with open(args.config, "w", encoding="utf-8") as f:
-                        f.write(
-                            "# one target per line (process name or window title)\n"
-                        )
-                    print(
-                        f"Created {args.config} - add one target per line, "
-                        "then run again."
-                    )
-                    created = True
-                except OSError:
-                    log.error("Unable to create config file: %s", args.config)
-                    print(f"Unable to create config file: {args.config}")
-            wait_key()
-            return 0 if created else 1
+        targets = load_config_targets(windows, args.config)
         if not targets:
             print("No windows matched the config file.")
             wait_key()
@@ -1145,6 +1151,41 @@ def main() -> int:
             )
         wait_key()
         return 0 if ok else 1
+
+    if args.check:
+        path = args.config or "protect.txt"
+        targets = load_config_targets(windows, path)
+        if not targets:
+            print("No windows matched the config file.")
+            wait_key()
+            return 1
+        for name in load_config(path):
+            needle = name.lower()
+            hit = any(
+                needle in get_process_name(w.pid).lower() or needle in w.title.lower()
+                for w in windows
+            )
+            if not hit:
+                print(f"[--] no window for: {name}")
+        unprotected = [
+            w for w in targets if window_affinity(w.hwnd) != WDA_EXCLUDEFROMCAPTURE
+        ]
+        for w in targets:
+            if window_affinity(w.hwnd) == WDA_EXCLUDEFROMCAPTURE:
+                print(f"[OK] '{w.title}' (pid {w.pid}) injected")
+            else:
+                print(f"[--] '{w.title}' (pid {w.pid}) not injected")
+        if unprotected and ask_yes_no(
+            f"Inject the {len(unprotected)} unprotected window(s)? (y/N)"
+        ):
+            ok = protect(unprotected, force_inject=args.inject)
+            if ok:
+                print(
+                    f"[VERIFIED] Protection applied and verified "
+                    f"for {len(unprotected)} window(s)."
+                )
+        wait_key()
+        return 0
 
     targets = find_targets(windows, args)
     if targets is None:
