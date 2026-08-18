@@ -61,4 +61,4 @@ jobs:
         run: |
           git tag -a "v$VER" -m "RecSpoof v$VER"
           git push origin "v$VER"
-          gh release create "v$VER" --title "RecSpoof $VER" --notes-file notes.txt --attach recspoof.py
+          gh release create "v$VER" --title "RecSpoof $VER" --notes-file notes.txt recspoof.py
