@@ -31,16 +31,16 @@ python recspoof.py --check              check config targets, inject the rest
 ### Options
 
 | Option | Description |
-| --------------------- | ----------- |
-| `-p, --pid` | Target a window by process ID (exact) |
-| `-n, --name` | Target by process name (exact) |
-| `-t, --title` | Target by window title (substring) |
+| ---------------- | ----------- |
+| `-p, --pid <PID>` | Target a window by process ID (exact) |
+| `-n, --name <NAME>` | Target by process name (exact) |
+| `-t, --title <TITLE>` | Target by window title (substring) |
 | `-a, --all` | Apply to all matching windows |
 | `-l, --list` | List windows and their injection state |
 | `-s, --status` | Show injection state only (no elevation) |
 | `-c, --clear` | Remove injection (`WDA_NONE`) |
 | `-x, --inject` | Force in-process injection instead of the direct call |
-| `--config FILE` | Batch-protect from a file: one target per line (`#` comments allowed), each line matches process name or window title (substring, case-insensitive). If the file does not exist, the script offers to create it. |
+| `--config <FILE>` | Batch-protect from a file: one target per line (`#` comments allowed), each line matches process name or window title (substring, case-insensitive). If the file does not exist, the script offers to create it. |
 | `--check` | Check the config targets: reports injected / not injected windows, apps that are not running, then offers to inject the unprotected ones (uses `--config FILE`, or `protect.txt` by default) |
 
 Example `protect.txt`:
