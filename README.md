@@ -10,6 +10,10 @@ Protected windows appear black or empty in capture tools, while remaining fully 
 - Python 3 (64-bit, 3.10+) — no third-party dependencies, only the standard library (`ctypes`)
 - Administrator rights (a UAC prompt appears on launch; the elevated process reattaches to the same console)
 
+## Structure
+
+`recspoof.py` is a thin launcher; the implementation lives in the `lib/` package next to it (core, system, windows, injector, protector, config, ui).
+
 ## Usage
 
 ```
@@ -27,7 +31,7 @@ python recspoof.py --check              check config targets, inject the rest
 ### Options
 
 | Option | Description |
-| --- | --- |
+| ----- | ---- - |
 | `-p, --pid` | Target a window by process ID (exact) |
 | `-n, --name` | Target by process name (exact) |
 | `-t, --title` | Target by window title (substring) |

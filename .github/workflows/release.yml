@@ -3,7 +3,7 @@ name: Auto Release
 on:
   push:
     branches: [master]
-    paths: [recspoof.py]
+    paths: [recspoof.py, lib/**]
 
 permissions:
   contents: write
@@ -61,4 +61,5 @@ jobs:
         run: |
           git tag -a "v$VER" -m "RecSpoof v$VER"
           git push origin "v$VER"
-          gh release create "v$VER" --title "RecSpoof $VER" --notes-file notes.txt recspoof.py
+          zip -r "recspoof-$VER.zip" recspoof.py lib
+          gh release create "v$VER" --title "RecSpoof $VER" --notes-file notes.txt "recspoof-$VER.zip"

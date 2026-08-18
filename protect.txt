@@ -1,0 +1,5 @@
+# one target per line (process name or window title)
+code
+spotify
+discord
+opencode
