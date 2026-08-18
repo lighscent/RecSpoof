@@ -11,6 +11,8 @@ Usage:
   python recspoof.py -p 1234 -x            # force in-process injection
 """
 
+from __future__ import annotations
+
 import argparse
 import ctypes
 import functools
@@ -21,9 +23,13 @@ import shutil
 import struct
 import subprocess
 import sys
+from collections.abc import Callable
 from ctypes import wintypes
+from typing import Any
 
 log = logging.getLogger("recspoof")
+
+Window = tuple[int, int, str]
 
 # ------------------------------------------------------------- constants
 
@@ -54,7 +60,7 @@ INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 # ------------------------------------------------------- Win32 bindings
 
 
-def api(dll, name, restype, *argtypes):
+def api(dll: ctypes.WinDLL, name: str, restype: Any, *argtypes: Any) -> Any:
     fn = getattr(dll, name)
     fn.argtypes = list(argtypes)
     fn.restype = restype
@@ -284,7 +290,7 @@ GetModuleBaseNameW = api(
 # ---------------------------------------------------------------- helpers
 
 
-def enable_ansi():
+def enable_ansi() -> None:
     """Enable ANSI color sequences on the Windows console."""
     h = GetStdHandle(STD_OUTPUT_HANDLE)
     mode = wintypes.DWORD()
@@ -292,7 +298,7 @@ def enable_ansi():
         SetConsoleMode(h, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
 
 
-def setup_console_logging():
+def setup_console_logging() -> None:
     """Configure console-only logging (WARNING and above)."""
     stream = logging.StreamHandler()
     stream.setLevel(logging.WARNING)
@@ -303,7 +309,7 @@ def setup_console_logging():
     )
 
 
-def set_console_logging(level):
+def set_console_logging(level: int) -> None:
     """Set the console log level (WARNING and above only)."""
     for logger in (logging.getLogger(), log):
         for handler in logger.handlers:
@@ -311,7 +317,7 @@ def set_console_logging(level):
                 handler.setLevel(level)
 
 
-def rebind_console_stdio():
+def rebind_console_stdio() -> None:
     """Reopen stdio on the current console (CONIN$/CONOUT$)."""
     sys.stdin = None
     sys.stdout = None
@@ -331,7 +337,7 @@ def rebind_console_stdio():
     sys.stderr = os.fdopen(2, "w")
 
 
-def attach_parent_console():
+def attach_parent_console() -> None:
     """Attach to the console of the launching process (UAC relaunch)."""
     attached = bool(AttachConsole(ATTACH_PARENT_PROCESS))
     if not attached:
@@ -340,7 +346,7 @@ def attach_parent_console():
         rebind_console_stdio()
 
 
-def relaunch_elevated():
+def relaunch_elevated() -> int:
     """Relaunch elevated via UAC, then wait for it in the same console."""
     script = os.path.abspath(__file__)
     params = f'"{script}" {subprocess.list2cmdline(sys.argv[1:])}'
@@ -367,7 +373,7 @@ def relaunch_elevated():
     return code.value
 
 
-def ensure_admin():
+def ensure_admin() -> None:
     """Request UAC elevation at launch, keeping the same console window."""
     if IsUserAnAdmin():
         attach_parent_console()
@@ -375,7 +381,7 @@ def ensure_admin():
     sys.exit(relaunch_elevated())
 
 
-def get_window_title(hwnd):
+def get_window_title(hwnd: int) -> str:
     length = GetWindowTextLengthW(hwnd)
     if length == 0:
         return ""
@@ -385,7 +391,7 @@ def get_window_title(hwnd):
 
 
 @functools.lru_cache(maxsize=256)
-def get_process_name(pid):
+def get_process_name(pid: int) -> str:
     h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
         return f"pid {pid}"
@@ -399,11 +405,11 @@ def get_process_name(pid):
         CloseHandle(h)
 
 
-def list_windows():
-    windows = []
+def list_windows() -> list[Window]:
+    windows: list[Window] = []
 
     @EnumWindowsProc
-    def callback(hwnd, lparam):
+    def callback(hwnd, lparam) -> bool:
         if IsWindowVisible(hwnd):
             title = get_window_title(hwnd)
             if title:
@@ -416,14 +422,14 @@ def list_windows():
     return windows
 
 
-def window_affinity(hwnd):
+def window_affinity(hwnd: int) -> int | None:
     state = wintypes.UINT()
     if GetWindowDisplayAffinity(hwnd, ctypes.byref(state)):
         return state.value
     return None
 
 
-def affinity_label(hwnd, state=None):
+def affinity_label(hwnd: int, state: int | None = None) -> str:
     if state is None:
         state = window_affinity(hwnd)
     if state is None:
@@ -431,13 +437,12 @@ def affinity_label(hwnd, state=None):
     return AFFINITY_NAMES.get(state, f"unknown ({state})")
 
 
-def is_chromium(pid):
+def is_chromium(pid: int) -> bool:
     name = os.path.splitext(get_process_name(pid))[0].lower()
     return name in CHROMIUM
 
 
-def process_suspended(pid):
-    """True if the process has at least one thread in the suspended state."""
+def process_suspended(pid: int) -> bool:
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, pid)
     if snap == INVALID_HANDLE_VALUE:
         return False
@@ -458,7 +463,7 @@ def process_suspended(pid):
 # ---------------------------------------------------------------- actions
 
 
-def render_windows(windows):
+def render_windows(windows: list[Window]) -> list[str]:
     proc_w = min(max(len(get_process_name(pid)) for _, pid, _ in windows), 40)
     header = (
         f"{'#':>4}  {'PID':>6}    {'PROC':<{proc_w}} {'STATE':<15} {'INJ':<11} TITLE"
@@ -476,11 +481,11 @@ def render_windows(windows):
     return rows
 
 
-def print_windows(windows):
+def print_windows(windows: list[Window]) -> None:
     print("\n".join(render_windows(windows)))
 
 
-def select_interactive(windows):
+def select_interactive(windows: list[Window]) -> None:
     """Arrow-key navigation; Enter protects inline, status shown at the bottom."""
     enable_ansi()
     GREEN = "\x1b[32m"
@@ -498,12 +503,12 @@ def select_interactive(windows):
     status = [""]
     states = {}
 
-    def get_state(hwnd):
+    def get_state(hwnd: int) -> int | None:
         if hwnd not in states:
             states[hwnd] = window_affinity(hwnd)
         return states[hwnd]
 
-    def row_text(i):
+    def row_text(i: int) -> str:
         """Live row text: state and INJ marker always up to date."""
         hwnd, pid, title = windows[i]
         state = get_state(hwnd)
@@ -515,7 +520,7 @@ def select_interactive(windows):
             f"{affinity_label(hwnd, state):<15} {inj:<11} {title}"
         )
 
-    def paint(i, selected):
+    def paint(i: int, selected: bool) -> str:
         """Colored line: green = selection, cyan = already protected."""
         line = row_text(i)[: width - 3]  # truncate so no wrap (keeps rows aligned)
         if selected:
@@ -524,11 +529,11 @@ def select_interactive(windows):
             return f"{CYAN}  {line}{RESET}"
         return f"  {line}"
 
-    def draw_status():
+    def draw_status() -> None:
         sys.stdout.write(f"\x1b[{page_h + 4}H\x1b[K{status[0]}")
         sys.stdout.flush()
 
-    def draw_all():
+    def draw_all() -> None:
         sys.stdout.write("\x1b[H\x1b[J")  # cursor home + clear screen
         sys.stdout.write(f"{header}\n{sep}\n")
         for i in range(offset, offset + page_h):
@@ -539,7 +544,7 @@ def select_interactive(windows):
         draw_status()
         sys.stdout.flush()
 
-    def draw_line(i, selected):
+    def draw_line(i: int, selected: bool) -> None:
         """Redraw ONLY line i (anti-flicker)."""
         if not (offset <= i < offset + page_h):
             return
@@ -547,7 +552,7 @@ def select_interactive(windows):
         sys.stdout.write(paint(i, selected))
         sys.stdout.flush()
 
-    def protect_one(i):
+    def protect_one(i: int) -> bool:
         """Protect window i, update its row and the bottom status line."""
         hwnd, pid, title = windows[i]
         if is_chromium(pid) and get_state(hwnd) != WDA_EXCLUDEFROMCAPTURE:
@@ -627,7 +632,9 @@ def select_interactive(windows):
         set_console_logging(logging.WARNING)
 
 
-def apply_affinity(hwnd, affinity, force_inject):
+def apply_affinity(
+    hwnd: int, affinity: int, force_inject: bool
+) -> tuple[bool, str | None]:
     """Try the direct call, otherwise in-process injection. Returns (ok, method)."""
     if not force_inject and SetWindowDisplayAffinity(hwnd, affinity):
         return True, "direct"
@@ -644,7 +651,9 @@ def apply_affinity(hwnd, affinity, force_inject):
     return False, None
 
 
-def protect(windows, clear=False, force_inject=False):
+def protect(
+    windows: list[Window], clear: bool = False, force_inject: bool = False
+) -> bool:
     affinity = WDA_NONE if clear else WDA_EXCLUDEFROMCAPTURE
     log.debug(
         "Applying affinity %s (clear=%s) to %d window(s)",
@@ -677,7 +686,7 @@ def protect(windows, clear=False, force_inject=False):
     return ok
 
 
-def show_status(windows):
+def show_status(windows: list[Window]) -> None:
     for hwnd, pid, title in windows:
         print(f"[{affinity_label(hwnd)}] {get_process_name(pid)} (pid {pid}) {title}")
         log.debug(
@@ -692,7 +701,9 @@ def show_status(windows):
 # ---------------------------------------------------------- injection
 
 
-def build_shellcode(affinity, set_affinity_addr, exit_thread_addr):
+def build_shellcode(
+    affinity: int, set_affinity_addr: int, exit_thread_addr: int
+) -> bytes:
     # x64: SetWindowDisplayAffinity(hwnd=RCX, affinity), then ExitThread(result)
     sc = bytearray()
     sc += b"\x48\xba" + struct.pack("<Q", affinity)  # movabs rdx, affinity
@@ -707,7 +718,9 @@ def build_shellcode(affinity, set_affinity_addr, exit_thread_addr):
     return bytes(sc)
 
 
-def build_shellcode_x86(affinity, set_affinity_addr, exit_thread_addr):
+def build_shellcode_x86(
+    affinity: int, set_affinity_addr: int, exit_thread_addr: int
+) -> bytes:
     # x86 stdcall: SetWindowDisplayAffinity(hwnd=[esp+4], affinity), then ExitThread
     sc = bytearray()
     sc += b"\x8b\x44\x24\x04"  # mov eax, [esp+4]  (hwnd param from CreateRemoteThread)
@@ -725,7 +738,9 @@ def build_shellcode_x86(affinity, set_affinity_addr, exit_thread_addr):
     return bytes(sc)
 
 
-def pe_export(path, name):
+def pe_export(
+    path: str, name: str
+) -> tuple[int, int, int, Callable[[int], int]] | None:
     """Export info of a function in a PE file: (rva, exp_start, exp_end, read_off).
     Returns None if not found. read_off(rva) maps an RVA to a file offset."""
     with open(path, "rb") as f:
@@ -767,7 +782,7 @@ def pe_export(path, name):
     return None
 
 
-def resolve_x86_export(h, dll, func):
+def resolve_x86_export(h: int, dll: str, func: str) -> int | None:
     """Absolute address of a function in a 32-bit target process (follows
     forwarded exports like kernel32!ExitThread -> KERNELBASE!ExitThread)."""
     syswow = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "SysWOW64")
@@ -794,7 +809,7 @@ def resolve_x86_export(h, dll, func):
     return None
 
 
-def module_base(h, name, flags):
+def module_base(h: int, name: str, flags: int) -> int | None:
     """Base address of a loaded module in a process (psapi), or None."""
     needed = wintypes.DWORD()
     if not EnumProcessModulesEx(h, None, 0, ctypes.byref(needed), flags):
@@ -816,7 +831,7 @@ def module_base(h, name, flags):
     return None
 
 
-def resolve_x86_addresses(h):
+def resolve_x86_addresses(h: int) -> tuple[int, int]:
     """Resolve SetWindowDisplayAffinity/ExitThread in a 32-bit target process."""
     swda = resolve_x86_export(h, "user32.dll", "SetWindowDisplayAffinity")
     exit_thread = resolve_x86_export(h, "kernel32.dll", "ExitThread")
@@ -825,7 +840,7 @@ def resolve_x86_addresses(h):
     return swda, exit_thread
 
 
-def inject(hwnd, affinity):
+def inject(hwnd: int, affinity: int) -> bool:
     """Call SetWindowDisplayAffinity from inside the target process (x64/x86 shellcode).
     Runs in-process to bypass the access denied (error 5) on cross-process calls."""
     if struct.calcsize("P") != 8:
@@ -906,7 +921,7 @@ def inject(hwnd, affinity):
 # ---------------------------------------------------------------- CLI
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Protect a window against screen capture (OBS, Discord...)"
     )
@@ -945,7 +960,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def find_targets(windows, args):
+def find_targets(
+    windows: list[Window], args: argparse.Namespace
+) -> list[Window] | None:
     """Return the list of target windows according to the CLI criteria."""
     if args.pid:
         return [w for w in windows if w[1] == args.pid]
@@ -960,7 +977,7 @@ def find_targets(windows, args):
     return None
 
 
-def wait_key():
+def wait_key() -> None:
     """Keep the console open until a key is pressed."""
     try:
         print("\nPress any key to close...")
