@@ -31,6 +31,8 @@ from typing import Any
 
 log = logging.getLogger("recspoof")
 
+__version__ = "1.0.0"
+
 
 @dataclass
 class Window:
@@ -960,6 +962,9 @@ def inject(hwnd: int, affinity: int) -> bool:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Protect a window against screen capture (OBS, Discord...)"
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
     target = parser.add_argument_group("target (otherwise interactive selection)")
     target.add_argument("-p", "--pid", type=int, help="process PID")
