@@ -1,0 +1,64 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [master]
+    paths: [recspoof.py]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from recspoof.py
+        id: version
+        run: |
+          VER=$(python -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('recspoof.py').read()).group(1))")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Compare with latest tag
+        id: check
+        env:
+          VER: ${{ steps.version.outputs.version }}
+        run: |
+          LATEST=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
+          echo "latest=$LATEST"
+          if [ -z "$LATEST" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "range=" >> "$GITHUB_OUTPUT"
+          elif [ "$LATEST" = "v$VER" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "range=$LATEST..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect commit messages since last release
+        id: notes
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          RANGE="${{ steps.check.outputs.range }}"
+          if [ -n "$RANGE" ]; then
+            git log --pretty=format:'- %s' "$RANGE"
+          else
+            git log --pretty=format:'- %s'
+          fi > notes.txt
+          if [ ! -s notes.txt ]; then
+            echo "- Initial release" > notes.txt
+          fi
+
+      - name: Create tag and release
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.version.outputs.version }}
+        run: |
+          git tag -a "v$VER" -m "RecSpoof v$VER"
+          git push origin "v$VER"
+          gh release create "v$VER" --title "RecSpoof $VER" --notes-file notes.txt
