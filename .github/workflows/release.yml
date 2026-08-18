@@ -45,9 +45,9 @@ jobs:
         run: |
           RANGE="${{ steps.check.outputs.range }}"
           if [ -n "$RANGE" ]; then
-            git log --pretty=format:'- %s' "$RANGE"
+            git log --reverse --pretty=format:'- %s' "$RANGE"
           else
-            git log --pretty=format:'- %s'
+            git log --reverse --pretty=format:'- %s'
           fi > notes.txt
           if [ ! -s notes.txt ]; then
             echo "- Initial release" > notes.txt
