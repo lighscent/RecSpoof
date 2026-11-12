@@ -3,65 +3,73 @@ name: Auto Release
 on:
   push:
     branches: [master]
-    paths: [recspoof.py, lib/**, .github/workflows/release.yml]
+    paths: [src/**, include/**, CMakeLists.txt, .github/workflows/release.yml]
 
 permissions:
   contents: write
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Read version from recspoof.py
+      - name: Read version from src/main.cpp
         id: version
+        shell: pwsh
         run: |
-          VER=$(python -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('recspoof.py').read()).group(1))")
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          $ver = (Select-String -Path src/main.cpp -Pattern 'kVersion = L"([^"]+)"').Matches[0].Groups[1].Value
+          "version=$ver" >> $env:GITHUB_OUTPUT
 
       - name: Compare with latest tag
         id: check
+        shell: pwsh
         env:
           VER: ${{ steps.version.outputs.version }}
         run: |
-          LATEST=$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)
-          echo "latest=$LATEST"
-          if [ -z "$LATEST" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "range=" >> "$GITHUB_OUTPUT"
-          elif [ "$LATEST" = "v$VER" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "range=$LATEST..HEAD" >> "$GITHUB_OUTPUT"
-          fi
+          $latest = git tag --list 'v*' --sort=-v:refname | Select-Object -First 1
+          "latest=$latest" >> $env:GITHUB_OUTPUT
+          if (-not $latest) {
+            "changed=true" >> $env:GITHUB_OUTPUT
+            "range=" >> $env:GITHUB_OUTPUT
+          } elseif ($latest -eq "v$env:VER") {
+            "changed=false" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=true" >> $env:GITHUB_OUTPUT
+            "range=$latest..HEAD" >> $env:GITHUB_OUTPUT
+          }
 
       - name: Collect commit messages since last release
         id: notes
         if: steps.check.outputs.changed == 'true'
+        shell: pwsh
         run: |
-          RANGE="${{ steps.check.outputs.range }}"
-          if [ -n "$RANGE" ]; then
-            git log --reverse --pretty=format:'- %s' "$RANGE"
-          else
-            git log --reverse --pretty=format:'- %s'
-          fi > notes.txt
-          if [ ! -s notes.txt ]; then
-            echo "- Initial release" > notes.txt
-          fi
+          $range = "${{ steps.check.outputs.range }}"
+          if ($range) {
+            git log --reverse --pretty=format:'- %s' $range | Out-File -Encoding utf8 notes.txt
+          } else {
+            git log --reverse --pretty=format:'- %s' | Out-File -Encoding utf8 notes.txt
+          }
+          if (-not (Get-Item notes.txt).Length) { "- Initial release" | Out-File -Encoding utf8 notes.txt }
+
+      - name: Build
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          cmake -S . -B build -A x64
+          cmake --build build --config Release
 
       - name: Create tag and release
         if: steps.check.outputs.changed == 'true'
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           VER: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VER" -m "RecSpoof v$VER"
-          git push origin "v$VER"
-          zip -r "recspoof-$VER.zip" recspoof.py lib
-          gh release create "v$VER" --title "RecSpoof $VER" --notes-file notes.txt "recspoof-$VER.zip"
+          git tag -a "v$env:VER" -m "RecSpoof v$env:VER"
+          git push origin "v$env:VER"
+          Compress-Archive -Path build/Release/RecSpoof.exe -DestinationPath "recspoof-$env:VER.zip"
+          gh release create "v$env:VER" --title "RecSpoof $env:VER" --notes-file notes.txt "recspoof-$env:VER.zip"
