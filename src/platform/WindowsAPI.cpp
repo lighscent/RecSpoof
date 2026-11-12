@@ -48,6 +48,7 @@ std::wstring format_error(DWORD code) {
 }
 
 void write(const std::wstring& text) {
+    ensure_console();
     const std::string bytes = narrow(text);
     std::fwrite(bytes.data(), 1, bytes.size(), stdout);
     std::fflush(stdout);
@@ -56,6 +57,7 @@ void write(const std::wstring& text) {
 void write_line(const std::wstring& text) { write(text + L"\n"); }
 
 void write_error(const std::wstring& text) {
+    ensure_console();
     const std::string bytes = narrow(text + L"\n");
     std::fwrite(bytes.data(), 1, bytes.size(), stderr);
     std::fflush(stderr);
@@ -109,6 +111,22 @@ void rebind_std_handle(DWORD which, const wchar_t* name, DWORD access) {
     if (handle != INVALID_HANDLE_VALUE) SetStdHandle(which, handle);
 }
 
+void rebind_stdio() {
+    rebind_std_handle(STD_INPUT_HANDLE, L"CONIN$", GENERIC_READ | GENERIC_WRITE);
+    rebind_std_handle(STD_OUTPUT_HANDLE, L"CONOUT$", GENERIC_READ | GENERIC_WRITE);
+    rebind_std_handle(STD_ERROR_HANDLE, L"CONOUT$", GENERIC_READ | GENERIC_WRITE);
+    FILE* stream = nullptr;
+    freopen_s(&stream, "CONIN$", "r", stdin);
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+}
+
+// Redirected stdout (a pipe from ctest, a file) must survive console acquisition.
+bool stdout_usable() {
+    HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    return handle && handle != INVALID_HANDLE_VALUE;
+}
+
 }  // namespace
 
 std::wstring join_args(const std::vector<std::wstring>& args) {
@@ -150,20 +168,38 @@ int relaunch_elevated(const std::vector<std::wstring>& args) {
     return static_cast<int>(code);
 }
 
-void attach_parent_console() {
-    if (!AttachConsole(ATTACH_PARENT_PROCESS) && !AllocConsole()) return;
-    rebind_std_handle(STD_INPUT_HANDLE, L"CONIN$", GENERIC_READ | GENERIC_WRITE);
-    rebind_std_handle(STD_OUTPUT_HANDLE, L"CONOUT$", GENERIC_READ | GENERIC_WRITE);
-    rebind_std_handle(STD_ERROR_HANDLE, L"CONOUT$", GENERIC_READ | GENERIC_WRITE);
-    FILE* stream = nullptr;
-    freopen_s(&stream, "CONIN$", "r", stdin);
-    freopen_s(&stream, "CONOUT$", "w", stdout);
-    freopen_s(&stream, "CONOUT$", "w", stderr);
+bool attach_parent_console() {
+    if (GetConsoleWindow()) return true;
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return false;
+    if (!stdout_usable()) rebind_stdio();
+    return true;
+}
+
+void allocate_console() {
+    if (GetConsoleWindow()) return;
+    if (!AllocConsole()) return;
+    SetConsoleTitleW(L"RecSpoof");
+    if (!stdout_usable()) rebind_stdio();
+}
+
+void ensure_console() {
+    static bool done = false;
+    if (done) return;
+    if (attach_parent_console()) {
+        done = true;
+        return;
+    }
+    if (stdout_usable()) {  // redirected output (pipe, file): no window wanted
+        done = true;
+        return;
+    }
+    allocate_console();
+    done = GetConsoleWindow() != nullptr;
 }
 
 void ensure_admin(const std::vector<std::wstring>& args) {
     if (is_admin()) {
-        attach_parent_console();
+        if (!attach_parent_console()) allocate_console();  // the UI needs a console
         return;
     }
     std::exit(relaunch_elevated(args));

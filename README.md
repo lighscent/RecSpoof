@@ -8,7 +8,7 @@ Protected windows appear black or empty in capture tools, while remaining fully 
 
 - Windows 10/11 (64-bit)
 - CMake 3.25+ and MSVC (Visual Studio 2022 Build Tools are enough) to build — the result is a single `RecSpoof.exe` with no runtime dependencies
-- Administrator rights (a UAC prompt appears on launch; the elevated process reattaches to the same console)
+- Administrator rights: the tool elevates itself, and opens exactly one console window for the interface (the same one when launched from an existing terminal)
 
 ## Build
 

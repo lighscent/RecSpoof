@@ -56,7 +56,11 @@ std::wstring join_args(const std::vector<std::wstring>& args);
 int relaunch_elevated(const std::vector<std::wstring>& args);
 void ensure_admin(const std::vector<std::wstring>& args);
 
-void attach_parent_console();
+// Console acquisition: the executable is a GUI-subsystem binary, so no console
+// exists until one is attached or allocated.
+bool attach_parent_console();  // attach to the launching console; true when one exists
+void allocate_console();       // AllocConsole when the process has none
+void ensure_console();         // attach, else allocate (cached per process)
 void enable_ansi();
 void utf8_console();
 bool ask_yes_no(const std::wstring& prompt);

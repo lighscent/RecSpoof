@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <shellapi.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -203,6 +204,8 @@ int protect_config(const std::vector<Window>& windows, const Options& options) {
 }
 
 int run(int argc, wchar_t** argv) {
+    // Attach before elevating: the elevated child reaches the console through us.
+    attach_parent_console();
     const Options options = parse_args(argc, argv);
     const std::vector<std::wstring> args(argv + 1, argv + argc);
     ensure_admin(args);
@@ -247,11 +250,17 @@ int run(int argc, wchar_t** argv) {
 
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return 1;
+
+    int code = 1;
     try {
-        return run(argc, argv);
+        code = run(argc, argv);
     } catch (const std::exception& error) {
         write_error(L"ERROR: " + recspoof::widen(error.what()));
-        return 1;
     }
+    LocalFree(argv);
+    return code;
 }

@@ -22,7 +22,7 @@ target_include_directories(recspoof_core PUBLIC include)
 target_compile_definitions(recspoof_core PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(recspoof_core PUBLIC user32 shell32 psapi)
 
-add_executable(RecSpoof src/main.cpp)
+add_executable(RecSpoof WIN32 src/main.cpp)
 target_link_libraries(RecSpoof PRIVATE recspoof_core)
 
 add_executable(selfcheck tests/selfcheck.cpp)
