@@ -4,6 +4,7 @@
 
 #include <shellapi.h>
 #include <conio.h>
+#include <io.h>
 
 #include <cstdio>
 #include <cwctype>
@@ -115,16 +116,20 @@ void rebind_stdio() {
     rebind_std_handle(STD_INPUT_HANDLE, L"CONIN$", GENERIC_READ | GENERIC_WRITE);
     rebind_std_handle(STD_OUTPUT_HANDLE, L"CONOUT$", GENERIC_READ | GENERIC_WRITE);
     rebind_std_handle(STD_ERROR_HANDLE, L"CONOUT$", GENERIC_READ | GENERIC_WRITE);
-    FILE* stream = nullptr;
-    freopen_s(&stream, "CONIN$", "r", stdin);
-    freopen_s(&stream, "CONOUT$", "w", stdout);
-    freopen_s(&stream, "CONOUT$", "w", stderr);
+    FILE* reopened = nullptr;
+    freopen_s(&reopened, "CONIN$", "r", stdin);
+    freopen_s(&reopened, "CONOUT$", "w", stdout);
+    freopen_s(&reopened, "CONOUT$", "w", stderr);
 }
 
 // Redirected stdout (a pipe from ctest, a file) must survive console acquisition.
-bool stdout_usable() {
-    HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    return handle && handle != INVALID_HANDLE_VALUE;
+DWORD stdout_type() {
+    const int descriptor = _fileno(stdout);
+    if (descriptor < 0) return FILE_TYPE_UNKNOWN;
+    const HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(descriptor));
+    if (handle == INVALID_HANDLE_VALUE) return FILE_TYPE_UNKNOWN;
+    SetLastError(0);
+    return GetFileType(handle);
 }
 
 }  // namespace
@@ -171,7 +176,7 @@ int relaunch_elevated(const std::vector<std::wstring>& args) {
 bool attach_parent_console() {
     if (GetConsoleWindow()) return true;
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) return false;
-    if (!stdout_usable()) rebind_stdio();
+    if (stdout_type() != FILE_TYPE_CHAR) rebind_stdio();
     return true;
 }
 
@@ -179,7 +184,7 @@ void allocate_console() {
     if (GetConsoleWindow()) return;
     if (!AllocConsole()) return;
     SetConsoleTitleW(L"RecSpoof");
-    if (!stdout_usable()) rebind_stdio();
+    rebind_stdio();  // the inherited stdout was never this new console
 }
 
 void ensure_console() {
@@ -189,7 +194,8 @@ void ensure_console() {
         done = true;
         return;
     }
-    if (stdout_usable()) {  // redirected output (pipe, file): no window wanted
+    const DWORD type = stdout_type();
+    if (type == FILE_TYPE_PIPE || type == FILE_TYPE_DISK) {  // captured output: no window
         done = true;
         return;
     }
