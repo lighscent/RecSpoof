@@ -225,7 +225,7 @@ bool inject(HWND hwnd, UINT affinity) {
     }
 
     try {
-        size_t written = 0;
+        SIZE_T written = 0;
         if (!WriteProcessMemory(process.get(), remote, shellcode.data(), shellcode.size(), &written)) {
             throw std::runtime_error("WriteProcessMemory failed (" +
                                      narrow(format_error(GetLastError())) + ")");

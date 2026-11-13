@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Injection requires a 64-bit process: default Visual Studio generators to x64.
+if(NOT DEFINED CMAKE_GENERATOR_PLATFORM AND CMAKE_GENERATOR MATCHES "Visual Studio")
+    set(CMAKE_GENERATOR_PLATFORM x64)
+endif()
+
 project(RecSpoof LANGUAGES CXX)
+
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "RecSpoof must be built as 64-bit: configure with -A x64 (Visual Studio) or from a 64-bit toolchain.")
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

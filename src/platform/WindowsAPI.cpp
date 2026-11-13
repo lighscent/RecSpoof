@@ -132,6 +132,11 @@ DWORD stdout_type() {
     return GetFileType(handle);
 }
 
+bool stdout_redirected() {
+    const DWORD type = stdout_type();
+    return type == FILE_TYPE_PIPE || type == FILE_TYPE_DISK;
+}
+
 }  // namespace
 
 std::wstring join_args(const std::vector<std::wstring>& args) {
@@ -176,7 +181,7 @@ int relaunch_elevated(const std::vector<std::wstring>& args) {
 bool attach_parent_console() {
     if (GetConsoleWindow()) return true;
     if (!AttachConsole(ATTACH_PARENT_PROCESS)) return false;
-    if (stdout_type() != FILE_TYPE_CHAR) rebind_stdio();
+    if (!stdout_redirected()) rebind_stdio();
     return true;
 }
 
@@ -184,7 +189,7 @@ void allocate_console() {
     if (GetConsoleWindow()) return;
     if (!AllocConsole()) return;
     SetConsoleTitleW(L"RecSpoof");
-    rebind_stdio();  // the inherited stdout was never this new console
+    if (!stdout_redirected()) rebind_stdio();  // the inherited stdout was never this console
 }
 
 void ensure_console() {
@@ -194,8 +199,7 @@ void ensure_console() {
         done = true;
         return;
     }
-    const DWORD type = stdout_type();
-    if (type == FILE_TYPE_PIPE || type == FILE_TYPE_DISK) {  // captured output: no window
+    if (stdout_redirected()) {  // captured output: no window wanted
         done = true;
         return;
     }

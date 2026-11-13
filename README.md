@@ -12,12 +12,21 @@ Protected windows appear black or empty in capture tools, while remaining fully 
 
 ## Build
 
+Visual Studio (the project forces x64; a 32-bit configure stops with an error because injection needs a 64-bit process):
+
+```
+cmake -S . -B build
+cmake --build build --config Release
+```
+
+Or Ninja from a 64-bit developer prompt:
+
 ```
 cmake -S . -B build -G Ninja
 cmake --build build
 ```
 
-Run the checks with `ctest --test-dir build --output-on-failure`. The executable is `build/RecSpoof.exe`.
+Run the checks with `ctest --test-dir build -C Release --output-on-failure` (drop `-C Release` for a single-config generator). The executable is `build\Release\RecSpoof.exe` for Visual Studio, or `build\RecSpoof.exe` for Ninja.
 
 ## Structure
 
