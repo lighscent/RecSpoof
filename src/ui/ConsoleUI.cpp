@@ -1,7 +1,6 @@
 #include "ConsoleUI.hpp"
 
 #include <windows.h>
-#include <conio.h>
 
 #include <algorithm>
 #include <fstream>
@@ -19,10 +18,18 @@ namespace recspoof {
 namespace {
 
 constexpr const wchar_t* kGreen = L"\x1b[32m";
-constexpr const wchar_t* kCyan = L"\x1b[36m";
+constexpr const wchar_t* kRed = L"\x1b[31m";
+constexpr const wchar_t* kYellow = L"\x1b[33m";
+constexpr const wchar_t* kTitle = L"\x1b[1;36m";
+constexpr const wchar_t* kDim = L"\x1b[2m";
+constexpr const wchar_t* kReverse = L"\x1b[7m";
 constexpr const wchar_t* kReset = L"\x1b[0m";
 constexpr const wchar_t* kHint =
-    L"Up/Down: navigate | Enter: protect | a: all | s: save to config | r: refresh | q: quit";
+    L" up/down move   enter inject   a all   s save   r refresh   q quit";
+constexpr const wchar_t* kRule = L"\u2500";  // box-drawing horizontal
+constexpr size_t kStateWidth = 12;
+
+enum class Tone { info, ok, fail, skip };
 
 std::wstring trim(const std::wstring& text) {
     const size_t first = text.find_first_not_of(L" \t\r\n");
@@ -43,6 +50,7 @@ size_t process_column(const std::vector<Window>& windows) {
     return std::min(widest, static_cast<size_t>(40));
 }
 
+// Plain table used by --list: fixed columns, no colors, pipe friendly.
 std::wstring format_row(const Window& window, size_t index, size_t proc_w,
                         std::optional<UINT> state) {
     std::wstring inj;
@@ -65,6 +73,94 @@ void console_size(int& columns, int& lines) {
     }
 }
 
+// Window size changes only arrive through ReadConsoleInput when this is set.
+void enable_window_input() {
+    HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (GetConsoleMode(input, &mode)) SetConsoleMode(input, mode | ENABLE_WINDOW_INPUT);
+}
+
+enum class Input { none, up, down, enter, all, save, refresh, quit, resize };
+
+Input read_input() {
+    INPUT_RECORD record{};
+    DWORD count = 0;
+    if (!ReadConsoleInputW(GetStdHandle(STD_INPUT_HANDLE), &record, 1, &count) || count == 0)
+        return Input::none;
+    if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) return Input::resize;
+    if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) return Input::none;
+
+    switch (record.Event.KeyEvent.wVirtualKeyCode) {
+        case VK_UP:
+            return Input::up;
+        case VK_DOWN:
+            return Input::down;
+        case VK_RETURN:
+            return Input::enter;
+        default:
+            break;
+    }
+    switch (record.Event.KeyEvent.uChar.UnicodeChar) {
+        case 3:
+        case L'q':
+            return Input::quit;
+        case L'a':
+            return Input::all;
+        case L's':
+            return Input::save;
+        case L'r':
+        case L'R':
+            return Input::refresh;
+        default:
+            return Input::none;
+    }
+}
+
+std::wstring state_label(const Window& window, std::optional<UINT> state) {
+    if (state == kExcludeFromCapture) return L"injected";
+    if (is_chromium(window.pid)) return L"unsupported";
+    return L"not injected";
+}
+
+const wchar_t* state_color(const Window& window, std::optional<UINT> state) {
+    if (state == kExcludeFromCapture) return kGreen;
+    if (is_chromium(window.pid)) return kRed;
+    return kDim;
+}
+
+const wchar_t* tone_color(Tone tone) {
+    switch (tone) {
+        case Tone::ok:
+            return kGreen;
+        case Tone::fail:
+            return kRed;
+        case Tone::skip:
+            return kYellow;
+        case Tone::info:
+            break;
+    }
+    return L"";
+}
+
+// One menu row: marker, index, pid, process, truncated title, right-aligned state.
+std::wstring menu_row(const Window& window, size_t index, size_t proc_w,
+                      std::optional<UINT> state, size_t line_width) {
+    const std::wstring prefix = L"  " + pad(std::to_wstring(index + 1), 4, true) + L"  " +
+                                pad(std::to_wstring(window.pid), 6, true) + L"  " +
+                                pad(process_name(window.pid), proc_w) + L" ";
+    const std::wstring suffix = L" " + pad(state_label(window, state), kStateWidth, true);
+
+    size_t available = 0;
+    if (line_width > prefix.size() + suffix.size()) {
+        available = line_width - prefix.size() - suffix.size();
+    }
+    std::wstring title = window.title;
+    if (title.size() > available) {
+        title = available > 3 ? title.substr(0, available - 3) + L"..." : title.substr(0, available);
+    }
+    return prefix + pad(title, available) + suffix;
+}
+
 class Menu {
 public:
     Menu(std::vector<Window> windows, std::wstring config_path)
@@ -72,12 +168,11 @@ public:
         int columns = 80;
         int lines = 25;
         console_size(columns, lines);
-        width_ = columns;
-        page_h_ = static_cast<size_t>(std::max(lines - 5, 3));
+        width_ = static_cast<size_t>(std::max(columns, 20));
+        page_h_ = static_cast<size_t>(std::max(lines - 6, 3));
         proc_w_ = process_column(windows_);
-        header_ = header_line(windows_);
-        separator_ = separator_line(windows_);
         enable_ansi();
+        enable_window_input();
     }
 
     void run() {
@@ -88,26 +183,32 @@ public:
 
         draw_all();
         for (;;) {
-            const int key = _getch();
-            if (key == 0xE0 || key == 0x00) {  // arrow prefix
-                const int arrow = _getch();
-                if (arrow == 'H') {
+            switch (read_input()) {
+                case Input::resize:
+                    relayout();
+                    break;
+                case Input::up:
                     move_up();
-                } else if (arrow == 'P') {
+                    break;
+                case Input::down:
                     move_down();
-                }
-                continue;
-            }
-            if (key == '\r') {
-                protect_one(index_);
-            } else if (key == 3 || key == 'q') {
-                return;
-            } else if (key == 'a') {
-                protect_all();
-            } else if (key == 's') {
-                save_to_config(index_);
-            } else if (key == 'r' || key == 'R') {
-                if (!refresh()) return;
+                    break;
+                case Input::enter:
+                    protect_one(index_);
+                    break;
+                case Input::all:
+                    protect_all();
+                    break;
+                case Input::save:
+                    save_to_config(index_);
+                    break;
+                case Input::refresh:
+                    if (!refresh()) return;
+                    break;
+                case Input::quit:
+                    return;
+                case Input::none:
+                    break;
             }
         }
     }
@@ -120,40 +221,96 @@ private:
         return states_[hwnd];
     }
 
-    std::wstring row_text(size_t i) { return format_row(windows_[i], i, proc_w_, get_state(windows_[i].hwnd)); }
-
-    std::wstring paint(size_t i, bool selected) {
-        std::wstring text = row_text(i);
-        const size_t limit = width_ > 3 ? static_cast<size_t>(width_ - 3) : 0;
-        if (text.size() > limit) text.resize(limit);
-        if (selected) return std::wstring(kGreen) + L"> " + text + kReset;
-        if (get_state(windows_[i].hwnd) == kExcludeFromCapture)
-            return std::wstring(kCyan) + L"  " + text + kReset;
-        return L"  " + text;
+    size_t injected_count() {
+        size_t injected = 0;
+        for (const Window& window : windows_) {
+            if (get_state(window.hwnd) == kExcludeFromCapture) ++injected;
+        }
+        return injected;
     }
 
-    void set_status(std::wstring status) {
-        if (status.size() >= static_cast<size_t>(width_)) status.resize(static_cast<size_t>(width_));
+    std::wstring title_bar() {
+        const size_t total = windows_.size();
+        const std::wstring count =
+            std::to_wstring(total) + (total == 1 ? L" window" : L" windows");
+        return L" " + std::wstring(kTitle) + L"RecSpoof" + kReset + L"  " + kDim + count +
+               kReset + L"  " + kGreen + std::to_wstring(injected_count()) + L" injected" +
+               kReset;
+    }
+
+    std::wstring rule() const { return std::wstring(width_ - 1, kRule[0]); }
+
+    std::wstring column_header() const {
+        const std::wstring prefix = L"  " + pad(L"#", 4, true) + L"  " + pad(L"PID", 6, true) +
+                                    L"  " + pad(L"PROCESS", proc_w_) + L" ";
+        const std::wstring suffix = L" " + pad(L"STATE", kStateWidth, true);
+        const size_t available =
+            width_ > prefix.size() + suffix.size() ? width_ - prefix.size() - suffix.size() : 0;
+        return prefix + pad(L"WINDOW", available) + suffix;
+    }
+
+    std::wstring paint(size_t i, bool selected) {
+        const Window& window = windows_[i];
+        const std::optional<UINT> state = get_state(window.hwnd);
+        std::wstring line = menu_row(window, i, proc_w_, state, width_);
+        if (selected) return std::wstring(kReverse) + L"> " + line.substr(2) + kReset;
+
+        const size_t tail = line.size() >= kStateWidth ? line.size() - kStateWidth : 0;
+        return line.substr(0, tail) + state_color(window, state) + line.substr(tail) + kReset;
+    }
+
+    void set_status(std::wstring status, Tone tone) {
+        if (status.size() >= width_) status.resize(width_ - 1);
         status_ = std::move(status);
+        tone_ = tone;
     }
 
     void draw_status() {
-        write(L"\x1b[" + std::to_wstring(page_h_ + 4) + L"H\x1b[K" + status_);
+        write(L"\x1b[" + std::to_wstring(page_h_ + 6) + L"H\x1b[K " + tone_color(tone_) +
+              status_ + kReset);
     }
 
+    void draw_header() { write(L"\x1b[1H\x1b[K" + title_bar()); }
+
     void draw_all() {
-        std::wstring out = L"\x1b[H\x1b[J" + header_ + L"\n" + separator_;
+        std::wstring out = L"\x1b[H\x1b[J";
+        out += title_bar() + L"\n";
+        out += rule() + L"\n";
+        out += kDim + column_header() + kReset + L"\n";
+        size_t drawn = 0;
         for (size_t i = offset_; i < std::min(offset_ + page_h_, windows_.size()); ++i) {
-            out += L"\n" + paint(i, i == index_);
+            out += paint(i, i == index_) + L"\n";
+            ++drawn;
         }
-        out += L"\n" + std::wstring(kHint) + L"\n";
+        for (; drawn < page_h_; ++drawn) out += L"\n";  // keep the footer at the bottom
+        out += rule() + L"\n" + kDim + kHint + kReset + L"\n";
         write(out);
         draw_status();
     }
 
     void draw_line(size_t i, bool selected) {
         if (i < offset_ || i >= offset_ + page_h_) return;
-        write(L"\x1b[" + std::to_wstring(3 + i - offset_) + L"H\x1b[K" + paint(i, selected));
+        write(L"\x1b[" + std::to_wstring(4 + i - offset_) + L"H\x1b[K" + paint(i, selected));
+    }
+
+    // Re-read the console size after a resize and repaint the whole frame.
+    void relayout() {
+        int columns = 80;
+        int lines = 25;
+        console_size(columns, lines);
+        width_ = static_cast<size_t>(std::max(columns, 20));
+        page_h_ = static_cast<size_t>(std::max(lines - 6, 3));
+
+        const size_t last = windows_.empty() ? 0 : windows_.size() - 1;
+        index_ = std::min(index_, last);
+        if (index_ < offset_) {
+            offset_ = index_;
+        } else if (index_ >= offset_ + page_h_) {
+            offset_ = index_ - page_h_ + 1;
+        }
+        const size_t max_offset = windows_.size() > page_h_ ? windows_.size() - page_h_ : 0;
+        offset_ = std::min(offset_, max_offset);
+        draw_all();
     }
 
     void move_up() {
@@ -205,14 +362,14 @@ private:
             }
         }
         if (std::find(existing.begin(), existing.end(), name) != existing.end()) {
-            set_status(L"'" + name + L"' is already in " + base);
+            set_status(L"'" + name + L"' is already in " + base, Tone::info);
         } else {
             std::ofstream out(path, std::ios::app);
             if (!out) {
-                set_status(L"Unable to write " + base);
+                set_status(L"Unable to write " + base, Tone::fail);
             } else {
                 out << narrow(name) << '\n';
-                set_status(L"Added '" + name + L"' to " + base);
+                set_status(L"Added '" + name + L"' to " + base, Tone::ok);
             }
         }
         draw_status();
@@ -223,7 +380,7 @@ private:
         const std::wstring where =
             L"'" + window.title + L"' (pid " + std::to_wstring(window.pid) + L")";
         if (is_chromium(window.pid) && get_state(window.hwnd) != kExcludeFromCapture) {
-            set_status(L"[SKIP] " + where + L" " + CHROMIUM_UNSUPPORTED);
+            set_status(L"SKIP " + where + L" " + CHROMIUM_UNSUPPORTED, Tone::skip);
             warn(L"SKIP: " + where + L" " + CHROMIUM_UNSUPPORTED);
             draw_line(i, i == index_);
             draw_status();
@@ -232,9 +389,11 @@ private:
         const auto [ok, method] = apply_affinity(window.hwnd, kExcludeFromCapture, false);
         states_[window.hwnd] = window_affinity(window.hwnd);
         const bool injected = states_[window.hwnd] == kExcludeFromCapture;
-        set_status(ok && injected ? L"[OK] (" + widen(method) + L") " + where + L" injected"
-                                  : L"[FAILED] " + where);
+        set_status(ok && injected ? L"OK (" + widen(method) + L") " + where + L" injected"
+                                  : L"FAILED " + where,
+                   ok && injected ? Tone::ok : Tone::fail);
         draw_line(i, i == index_);
+        draw_header();
         draw_status();
         return ok && injected;
     }
@@ -245,9 +404,10 @@ private:
             if (protect_one(i)) ++applied;
         }
         set_status(applied == windows_.size()
-                       ? L"[OK] " + std::to_wstring(applied) + L" window(s) injected"
-                       : L"[FAILED] " + std::to_wstring(windows_.size() - applied) + L"/" +
-                             std::to_wstring(windows_.size()) + L" window(s)");
+                       ? L"OK " + std::to_wstring(applied) + L" window(s) injected"
+                       : L"FAILED " + std::to_wstring(windows_.size() - applied) + L"/" +
+                             std::to_wstring(windows_.size()) + L" window(s)",
+                   applied == windows_.size() ? Tone::ok : Tone::fail);
         draw_all();
     }
 
@@ -257,8 +417,6 @@ private:
         windows_ = std::move(refreshed);
         states_.clear();
         proc_w_ = process_column(windows_);
-        header_ = header_line(windows_);
-        separator_ = separator_line(windows_);
         index_ = std::min(index_, windows_.size() - 1);
         const size_t max_offset = windows_.size() > page_h_ ? windows_.size() - page_h_ : 0;
         offset_ = std::min(offset_, max_offset);
@@ -273,10 +431,9 @@ private:
     size_t offset_ = 0;
     size_t page_h_ = 3;
     size_t proc_w_ = 0;
-    int width_ = 80;
-    std::wstring header_;
-    std::wstring separator_;
+    size_t width_ = 80;
     std::wstring status_;
+    Tone tone_ = Tone::info;
 };
 
 }  // namespace
