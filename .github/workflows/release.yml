@@ -2,7 +2,7 @@ name: Auto Release
 
 on:
   push:
-    branches: [master]
+    branches: [cpp-rewrite]
     paths: [src/**, include/**, CMakeLists.txt, .github/workflows/release.yml]
 
 permissions:
