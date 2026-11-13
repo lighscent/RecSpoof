@@ -20,7 +20,7 @@ namespace {
 
 using namespace recspoof;
 
-constexpr const wchar_t* kVersion = L"2.0.0";
+constexpr const wchar_t* kVersion = L"2.1.0";
 
 struct Options {
     std::optional<DWORD> pid;
